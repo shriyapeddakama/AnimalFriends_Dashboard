@@ -18,6 +18,23 @@ st.set_page_config(
 )
 
 
+# Canonical city aliases: variants/typos that should be folded into one city.
+# Keys are compared after case/whitespace normalization (strip + collapse + title-case).
+# Note: "East Pittsburgh" is intentionally NOT included — it is a distinct municipality.
+CITY_ALIASES = {
+    'Pgh': 'Pittsburgh',
+    'Pgh.': 'Pittsburgh',
+    'Pittsburgh Pa': 'Pittsburgh',
+    'Pittsburgh, Pa': 'Pittsburgh',
+    'Pittsburgh.': 'Pittsburgh',
+    'Pittsburgh Metro Area': 'Pittsburgh',
+    '15210 Pittsburgh': 'Pittsburgh',
+    'Pittsburg': 'Pittsburgh',
+    'Pittsbugh': 'Pittsburgh',
+    'Pittburgh': 'Pittsburgh',
+}
+
+
 @st.cache_data
 def load_excel(file) -> pd.DataFrame:
     return pd.read_excel(file)
@@ -66,6 +83,18 @@ def clean_adoption_data(df: pd.DataFrame) -> pd.DataFrame:
     df['Has_Phone'] = df['Primary Phone'].notna() & (df['Primary Phone'].astype(str).str.strip() != '')
     df['Contact_Score'] = df['Has_Email'].astype(int) + df['Has_Phone'].astype(int)
     df['Zip_Clean'] = df['Zip'].astype(str).str.strip().str[:5].str.zfill(5)
+    # Normalize city names: strip surrounding/duplicate whitespace and unify casing
+    # so "PITTSBURGH", "pittsburgh", and "Pittsburgh " all collapse to "Pittsburgh".
+    df['City'] = (
+        df['City']
+        .astype('string')
+        .str.strip()
+        .str.replace(r'\s+', ' ', regex=True)
+        .str.title()
+    )
+    # Fold known variants/typos (e.g. "Pgh", "Pittsburgh, Pa", "Pittsburg") into
+    # their canonical city name. Values not in the map are left unchanged.
+    df['City'] = df['City'].replace(CITY_ALIASES)
     return df
 
 
@@ -217,6 +246,9 @@ def geographic_section(df: pd.DataFrame, show_map: bool):
         color='Adoptions',
         color_continuous_scale='Greens',
     )
+    # Zip codes are all-numeric strings; force a categorical axis so Plotly shows
+    # the full zip (e.g. "15237") instead of SI-abbreviating ticks to "15.2k".
+    fig2.update_xaxes(type='category')
     st.plotly_chart(fig2, use_container_width=True)
 
     if show_map:
