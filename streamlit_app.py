@@ -9,6 +9,8 @@ import plotly.graph_objects as go
 import seaborn as sns
 import streamlit as st
 
+from ai_insights import render_insights, sidebar_ai_settings
+
 sns.set_theme(style='whitegrid', palette='muted')
 
 st.set_page_config(
@@ -455,6 +457,7 @@ def main():
     st.write('Upload the adoption and foster Excel reports to explore the dashboard.')
 
     adoption_file, foster_file = build_sidebar_helpers()
+    sidebar_ai_settings()
 
     if isinstance(adoption_file, str):
         adoption_data = load_excel(adoption_file)
@@ -487,19 +490,27 @@ def main():
 
     with tabs[0]:
         overview_section(df)
+        render_insights('overview', 'Data Overview', df)
     with tabs[1]:
         adoption_trends(df)
+        render_insights('trends', 'Adoption Trends', df)
     with tabs[2]:
         geographic_section(df, True)
+        render_insights('geography', 'Geographic Adoption Insights', df)
     with tabs[3]:
         profile_analysis(df)
+        render_insights('profiles', 'Animal Profile Analysis', df)
     with tabs[4]:
         staff_outcome_section(df)
+        render_insights('staff', 'Staff and Outcome Performance', df)
     with tabs[5]:
         repeat_adopter_section(df)
+        render_insights('repeat', 'Repeat Adopter Analysis', df)
     with tabs[6]:
         if foster_data is not None:
-            foster_section(clean_foster_data(foster_data))
+            foster_df = clean_foster_data(foster_data)
+            foster_section(foster_df)
+            render_insights('foster', 'Foster Activity Overview', df, df_foster=foster_df)
         else:
             st.info('Upload the foster dataset to view foster analytics.')
 
