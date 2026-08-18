@@ -9,7 +9,7 @@ build themselves.
 ## For Animal Friends staff
 
 **You do not need to install anything.** Open the dashboard link, sign in with
-the work email address you were invited with, and upload your reports.
+the email address you were invited with, and upload your reports.
 
 > **App link:** _(paste the share.streamlit.io URL here once deployed)_
 
@@ -46,8 +46,12 @@ between tabs.
 
 ### Getting access
 
-Access is by invitation to a specific email address. Ask the dashboard's
-maintainer to add you; you will get an emailed invite link.
+Access is granted to a specific email address — any address works, including a
+personal Gmail; it does not have to be an Animal Friends one. Ask the
+dashboard's maintainer to add you and you will get an emailed invite link.
+
+If your address is a Google account, you sign in with one click. Otherwise
+Streamlit emails you a single-use link each time you sign in.
 
 ---
 
@@ -88,8 +92,15 @@ The app runs as a **private** app on
   automatically, usually within a minute. Editing `requirements.txt` also
   rebuilds the environment, which takes a few minutes.
 - **To manage access:** in the Streamlit dashboard, **Share → enter email →
-  Invite**. Remove someone with the **×** beside their name. Note that GitHub
-  collaborators on this repo get access automatically, separate from that list.
+  Invite**. Any address works, including personal Gmail — the allowlist is
+  per-address, not per-domain, and there is no way to grant a whole domain.
+  Remove someone with the **×** beside their name.
+
+  Two things to keep in mind. GitHub collaborators on this repo get access
+  automatically, separate from that list. And because access follows the inbox
+  rather than a role, someone invited at a personal address keeps access until
+  they are explicitly removed — worth reviewing the viewer list periodically,
+  since the data includes adopter names, emails and phone numbers.
 - **To change the API key:** Streamlit dashboard → **App settings → Secrets**.
   Never commit it.
 
