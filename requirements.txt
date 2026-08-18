@@ -1,7 +1,13 @@
-streamlit
-pandas
-numpy
-plotly
-seaborn
-openpyxl
-groq
+# Upper bounds are deliberate. Animal Friends has no software team, so an
+# unpinned dependency making a breaking major release would take the dashboard
+# down with nobody able to diagnose it. Bounds are ranges rather than exact pins
+# so security patches still land automatically.
+#
+# seaborn/matplotlib are intentionally absent: every chart in the app is Plotly.
+streamlit>=1.50,<2
+pandas>=2.2,<3
+numpy>=1.26,<3
+plotly>=6,<7
+openpyxl>=3.1,<4
+groq>=1,<2
+zipcodes>=3,<4

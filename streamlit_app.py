@@ -6,12 +6,19 @@ import numpy as np
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
-import seaborn as sns
 import streamlit as st
 
 from ai_insights import render_insights, sidebar_ai_settings
-
-sns.set_theme(style='whitegrid', palette='muted')
+from geo_enrich import catchment_section
+from intake_outcome import (
+    flow_section,
+    foster_proxy_section,
+    intake_outcome_section,
+    prepare_records,
+    report_window,
+    seasonality_section,
+    surrender_section,
+)
 
 st.set_page_config(
     page_title='Animal Friends Dashboard',
@@ -112,15 +119,72 @@ def clean_foster_data(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def build_sidebar_helpers():
-    st.sidebar.header('Upload files')
-    adoption_file = st.sidebar.file_uploader('Adoption dataset', type=['xlsx'], key='adoption')
-    foster_file = st.sidebar.file_uploader('Foster dataset', type=['xlsx'], key='foster')
-    if st.sidebar.button('Use sample files if available'):
-        adoption_file = 'adopter-support-06_04_2021-06_03_2026-report-2026-06-04-020609.xlsx'
-        foster_file = 'foster-activity-06_04_2021-06_03_2026-report-2026-06-04-030628.xlsx'
+    st.sidebar.header('1. Upload your reports')
+    st.sidebar.caption(
+        'Export these from the shelter database as Excel (.xlsx) files. '
+        'Nothing is saved anywhere — the charts are built from your upload and '
+        'disappear when you close the tab.'
+    )
+
+    st.sidebar.markdown('**Required**')
+    adoption_file = st.sidebar.file_uploader(
+        'Adopter support report',
+        type=['xlsx'], key='adoption',
+        help='One row per adoption. Powers Overview, Trends, Geography, '
+             'Animal Profiles, Staff/Outcome and Repeat Adopters.',
+    )
+
+    st.sidebar.markdown('**Optional — each one adds more tabs**')
+    foster_file = st.sidebar.file_uploader(
+        'Foster activity report',
+        type=['xlsx'], key='foster',
+        help='One row per foster home. Adds the Foster tab.',
+    )
+    intake_file = st.sidebar.file_uploader(
+        'Animal intake report',
+        type=['xlsx'], key='intake',
+        help='Every animal that came in, adopted or not. Adds Intake & Outcome, '
+             'Seasonality and Surrenders.',
+    )
+    outcome_file = st.sidebar.file_uploader(
+        'Animal outcome report',
+        type=['xlsx'], key='outcome',
+        help='Every animal that left, and how. Adds Intake & Outcome, '
+             'Seasonality and Flow Diagnostics.',
+    )
+
     st.sidebar.markdown('---')
-    st.sidebar.write('No sidebar filters are enabled. All sections render on the full dataset.')
-    return adoption_file, foster_file
+    st.sidebar.caption('All charts use the full dataset — there are no filters to set.')
+    return adoption_file, foster_file, intake_file, outcome_file
+
+
+def read_upload(file, label):
+    """Load an uploaded workbook, reporting failures inline.
+
+    A wrong or corrupt file is a normal mistake for someone picking from a folder
+    of exports, so it surfaces as a sidebar message next to the uploader rather
+    than a traceback that takes the whole dashboard down.
+    """
+    if file is None:
+        return None
+    try:
+        return load_excel(file)
+    except Exception as exc:
+        st.sidebar.error(
+            f'**{label}** could not be read ({exc}). '
+            'Check it is the right report, exported as .xlsx.'
+        )
+    return None
+
+
+def prepare_shelter_records(raw, date_col, label, start, n_years):
+    """Validate and bucket a raw intake/outcome export."""
+    if raw is None:
+        return None
+    if date_col not in [c.strip() for c in raw.columns]:
+        st.sidebar.warning(f'{label}: no "{date_col}" column — the tabs needing it stay hidden.')
+        return None
+    return prepare_records(raw, date_col, start, n_years)
 
 
 def overview_section(df: pd.DataFrame):
@@ -301,6 +365,8 @@ def geographic_section(df: pd.DataFrame, show_map: bool):
                 except Exception as exc:
                     st.error(f'GeoJSON map load failed: {exc}')
 
+    catchment_section(df)
+
 
 def profile_analysis(df: pd.DataFrame):
     st.subheader('Animal Profile Analysis')
@@ -452,31 +518,72 @@ def foster_section(df_foster: pd.DataFrame):
     st.dataframe(top_fosters[['Foster Person Name', 'Foster Person Email', count_col, hours_col, reason_col]].head(10), use_container_width=True)
 
 
-def main():
-    st.title('Animal Friends Analysis Dashboard')
-    st.write('Upload the adoption and foster Excel reports to explore the dashboard.')
+SHELTER_TABS_HINT = (
+    'Upload the **Animal intake** and **Animal outcome** reports in the sidebar to '
+    'unlock this tab. The adopter support report only contains animals that were '
+    'adopted, so it cannot answer questions about intake volume, surrenders, or '
+    'what happened to the animals that were not adopted.'
+)
 
-    adoption_file, foster_file = build_sidebar_helpers()
+
+def welcome_screen():
+    """Shown until the required report is uploaded — the first thing a staff
+    member sees, so it has to name the actual files and set expectations."""
+    st.info('**Start by uploading the Adopter support report in the sidebar.** ←', icon='👈')
+
+    st.markdown(
+        'Export these from the shelter database as Excel (`.xlsx`) files. '
+        'The more you upload, the more of the dashboard opens up:'
+    )
+    st.dataframe(
+        pd.DataFrame(
+            [
+                ['Adopter support', 'Required',
+                 'Overview · Trends · Geography · Animal Profiles · Staff/Outcome · Repeat Adopters'],
+                ['Foster activity', 'Optional', 'Foster'],
+                ['Animal intake', 'Optional', 'Intake & Outcome · Seasonality · Surrenders'],
+                ['Animal outcome', 'Optional',
+                 'Intake & Outcome · Seasonality · Flow Diagnostics · Foster pipeline'],
+            ],
+            columns=['Report', 'Needed?', 'Tabs it unlocks'],
+        ),
+        hide_index=True,
+        use_container_width=True,
+    )
+
+    st.caption(
+        'Your files are never saved — the charts are built in memory and gone when you '
+        'close the tab, so you upload again each visit. If the dashboard ever greets you '
+        'with a "get this app back up" button, that is normal: it sleeps after 12 hours '
+        'unused. Click it and give it about 30 seconds.'
+    )
+
+
+def main():
+    st.title('🐾 Animal Friends Analysis Dashboard')
+
+    adoption_file, foster_file, intake_file, outcome_file = build_sidebar_helpers()
     sidebar_ai_settings()
 
-    if isinstance(adoption_file, str):
-        adoption_data = load_excel(adoption_file)
-    elif adoption_file is not None:
-        adoption_data = load_excel(adoption_file)
-    else:
-        adoption_data = None
-
-    foster_data = None
-    if foster_file is not None and not isinstance(foster_file, str):
-        foster_data = load_excel(foster_file)
-    elif foster_file is not None and isinstance(foster_file, str):
-        foster_data = load_excel(foster_file)
+    adoption_data = read_upload(adoption_file, 'Adopter support report')
+    foster_data = read_upload(foster_file, 'Foster activity report')
+    intake_raw = read_upload(intake_file, 'Animal intake report')
+    outcome_raw = read_upload(outcome_file, 'Animal outcome report')
 
     if adoption_data is None:
-        st.warning('Please upload the adoption dataset to enable the dashboard.')
+        welcome_screen()
         return
 
     df = clean_adoption_data(adoption_data)
+
+    # Intake and outcome share one anchor date and one bucket count so their
+    # "Year 1..Year N" axes line up even when the two exports start days apart.
+    start, n_years, year_labels = report_window(intake_raw, outcome_raw)
+    din = prepare_shelter_records(intake_raw, 'Intake Date', 'Animal intake report',
+                                  start, n_years)
+    dout = prepare_shelter_records(outcome_raw, 'Outcome Date', 'Animal outcome report',
+                                   start, n_years)
+    has_shelter_data = din is not None or dout is not None
 
     tabs = st.tabs([
         'Overview',
@@ -486,6 +593,10 @@ def main():
         'Staff / Outcome',
         'Repeat Adopters',
         'Foster',
+        'Intake & Outcome',
+        'Seasonality',
+        'Surrenders',
+        'Flow Diagnostics',
     ])
 
     with tabs[0]:
@@ -510,9 +621,41 @@ def main():
         if foster_data is not None:
             foster_df = clean_foster_data(foster_data)
             foster_section(foster_df)
+            if dout is not None:
+                foster_proxy_section(dout, year_labels)
             render_insights('foster', 'Foster Activity Overview', df, df_foster=foster_df)
+        elif dout is not None:
+            st.info('Upload the foster-activity dataset for foster-home level analytics.')
+            foster_proxy_section(dout, year_labels)
         else:
             st.info('Upload the foster dataset to view foster analytics.')
+
+    context = {'intake': din, 'outcome': dout, 'year_labels': year_labels}
+
+    with tabs[7]:
+        if has_shelter_data:
+            intake_outcome_section(din, dout, year_labels, start, n_years)
+            render_insights('intake_outcome', 'Intake & Outcome Macro View', df, context=context)
+        else:
+            st.info(SHELTER_TABS_HINT)
+    with tabs[8]:
+        if has_shelter_data:
+            seasonality_section(din, dout, year_labels)
+            render_insights('seasonality', 'Seasonality', df, context=context)
+        else:
+            st.info(SHELTER_TABS_HINT)
+    with tabs[9]:
+        if din is not None:
+            surrender_section(din, year_labels)
+            render_insights('surrender', 'Owner Surrender Analysis', df, context=context)
+        else:
+            st.info('Upload the **Animal intake** report in the sidebar to analyze owner surrenders.')
+    with tabs[10]:
+        if dout is not None:
+            flow_section(dout, year_labels)
+            render_insights('flow', 'Flow Diagnostics', df, context=context)
+        else:
+            st.info('Upload the **Animal outcome** report in the sidebar to trace intake-to-outcome flow.')
 
 
 if __name__ == '__main__':

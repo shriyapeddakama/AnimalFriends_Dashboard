@@ -1,0 +1,23 @@
+# Secrets — never commit API keys
+.streamlit/secrets.toml
+.env
+
+# Data exports — these contain adopter names, emails, and phone numbers.
+# The dashboard is upload-driven; no real data ever belongs in the repo.
+*.xlsx
+*.xls
+*.csv
+
+# Working analysis files — the Colab notebooks and the scripts exported from
+# them are personal working material, not part of the deployed app. The repo
+# holds only what Streamlit Cloud needs to run, so deploys stay fast.
+*.ipynb
+part_1_2_macro_overview_&_surrender_analysis.py
+af_adoption_foster_geo_analysis.py
+
+# Python
+__pycache__/
+*.pyc
+
+# Editor
+.vscode/
