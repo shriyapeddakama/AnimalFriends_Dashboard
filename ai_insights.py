@@ -790,28 +790,82 @@ def _build_observations(tab_key, df, df_foster, context=None):
 # --------------------------------------------------------------------------- #
 # Groq narrative (cached)                                                      #
 # --------------------------------------------------------------------------- #
+# Both reported failures were one bug: a completion budget of 1024 that the
+# longer briefs (Trends and Surrenders build the most observation bullets) ran
+# straight past. It shows up two different ways depending on the model:
+#
+#   * a reasoning model spends the budget thinking BEFORE it writes, so the
+#     answer comes back empty  -> "the model declined to summarize"
+#   * an ordinary model spends it WHILE writing, so the answer stops mid-word
+#     -> a narrative that trails off
+#
+# Both report finish_reason='length'. Headroom fixes both, and costs nothing
+# when unused: a narrative is only a few hundred tokens, so a model that
+# finishes normally never touches the rest of the allowance.
+NARRATIVE_MAX_TOKENS = 4096
+
+# One larger retry for the rare model verbose enough to still be mid-sentence at
+# 4096, so a truncated narrative is never the first thing the user is shown.
+NARRATIVE_RETRY_TOKENS = 8192
+
+# Families that reason before answering. They also accept `reasoning_effort`,
+# which keeps the thinking (and the latency) short for what is only a
+# summarization task.
+_REASONING_FAMILIES = ('gpt-oss', 'qwen3', 'deepseek-r1', 'magistral')
+
+
+def _is_reasoning_model(model: str) -> bool:
+    lowered = model.lower()
+    return any(family in lowered for family in _REASONING_FAMILIES)
+
+
 @st.cache_data(show_spinner=False)
-def _ai_narrative(brief, model, _api_key):
-    """Send the aggregate brief to Groq. `_api_key` is underscored so Streamlit
-    does not hash (or persist) the secret in the cache key."""
+def _ai_narrative(brief, model, _api_key, budget=NARRATIVE_MAX_TOKENS):
+    """Send the aggregate brief to Groq, returning ``(text, finish_reason)``.
+
+    `budget` is part of the cache key, so the larger retry is stored separately
+    from the first attempt rather than overwriting it. `_api_key` is underscored
+    so Streamlit does not hash (or persist) the secret in the cache key.
+    """
     from groq import Groq
 
     client = Groq(api_key=_api_key)
-    response = client.chat.completions.create(
+    kwargs = dict(
         model=model,
-        max_tokens=1024,
+        max_completion_tokens=budget,
         messages=[
             {'role': 'system', 'content': SYSTEM_PROMPT},
             {'role': 'user', 'content': brief},
         ],
     )
-    return (response.choices[0].message.content or '').strip()
+    if _is_reasoning_model(model):
+        kwargs['reasoning_effort'] = 'low'
+
+    try:
+        response = client.chat.completions.create(**kwargs)
+    except Exception as exc:
+        # A model that does not take `reasoning_effort` rejects the whole
+        # request. Drop the hint and ask again rather than reporting a failure
+        # the user can do nothing about.
+        if 'reasoning_effort' not in kwargs or not _is_param_error(exc):
+            raise
+        kwargs.pop('reasoning_effort')
+        response = client.chat.completions.create(**kwargs)
+
+    choice = response.choices[0]
+    return (choice.message.content or '').strip(), getattr(choice, 'finish_reason', None)
 
 
 def _is_model_error(exc) -> bool:
     """True when the failure is 'this model id no longer exists'."""
     text = str(exc).lower()
     return 'model_not_found' in text or 'does not exist' in text
+
+
+def _is_param_error(exc) -> bool:
+    """True when the request was rejected over an unsupported parameter."""
+    text = str(exc).lower()
+    return 'reasoning_effort' in text or 'unsupported' in text or 'unrecognized' in text
 
 
 def _candidate_models(api_key, tried):
@@ -833,30 +887,81 @@ def _candidate_models(api_key, tried):
 
 
 def _narrate(brief, api_key):
-    """Ask Groq for a narrative, self-healing past a retired model id.
+    """Ask Groq for a narrative, working down the candidate models.
 
-    A model_not_found means the cached listing is stale (Groq retired the id
-    since it was fetched), so the cache is dropped and the remaining candidates
-    are worked through rather than dead-ending on an error the user can do
-    nothing about. The sidebar's model selection is never mutated here — it is a
-    widget key, and rewriting it mid-run would reset the control under the user.
+    Two failure modes are both recoverable and both handled here:
+
+    * **A retired model id** (`model_not_found`) means the cached listing is
+      stale, so the cache is dropped and the next candidate is tried.
+    * **An empty answer** means the model produced nothing usable — in practice
+      a reasoning model that spent its whole budget thinking. Showing the user a
+      blank panel is useless when another model would have answered, so this
+      counts as a failure and moves on too.
+
+    A *truncated* answer (text present, ``finish_reason == 'length'``) is not a
+    failure — it is a real narrative that stops mid-sentence. That earns one
+    retry at a larger budget before being handed back, flagged, so the caller
+    can tell the reader it was cut short instead of presenting half a
+    recommendation as the whole thing.
+
+    The sidebar's model selection is never mutated here — it is a widget key,
+    and rewriting it mid-run would reset the control under the user.
+
+    Returns ``(text, model_used, truncated)``. Raises only when every candidate
+    failed.
     """
-    model, _ = resolve_model(api_key)
-    try:
-        return _ai_narrative(brief, model, api_key), model
-    except Exception as exc:
-        if not _is_model_error(exc):
-            raise
-        _list_models.clear()
-        tried = {model}
-        for candidate in _candidate_models(api_key, tried):
+    first, _ = resolve_model(api_key)
+    tried = set()
+    empties = []
+    listing_refreshed = False
+
+    candidates = [first] + _candidate_models(api_key, {first})
+    while candidates:
+        candidate = candidates.pop(0)
+        if candidate in tried:
+            continue
+        tried.add(candidate)
+
+        try:
+            text, finish = _ai_narrative(brief, candidate, api_key)
+        except Exception as exc:
+            if not _is_model_error(exc):
+                raise
+            if not listing_refreshed:
+                # The listing is stale — refresh it once and re-plan from what
+                # the key can actually see now.
+                _list_models.clear()
+                listing_refreshed = True
+                candidates = _candidate_models(api_key, tried)
+            continue
+
+        if text and finish == 'length':
+            # Real prose, but it ran out mid-sentence. Give this model one more
+            # go with room to finish before settling for the truncated version.
             try:
-                return _ai_narrative(brief, candidate, api_key), candidate
-            except Exception as retry_exc:
-                if not _is_model_error(retry_exc):
-                    raise
-                tried.add(candidate)
-        raise
+                longer, longer_finish = _ai_narrative(
+                    brief, candidate, api_key, NARRATIVE_RETRY_TOKENS)
+                if longer:
+                    return longer, candidate, longer_finish == 'length'
+            except Exception:
+                pass  # keep the shorter answer we already have
+            return text, candidate, True
+
+        if text:
+            return text, candidate, False
+
+        # Empty answer. `length` here means the budget went entirely on
+        # reasoning. The empty stays cached deliberately — a repeat click skips
+        # straight past this model to the one that did answer, rather than
+        # paying for it again, and clearing the whole cache would discard every
+        # other tab's good narrative along with it.
+        empties.append(f'{candidate} (finish_reason={finish})')
+
+    if empties:
+        raise RuntimeError(
+            'no model returned any text — tried ' + ', '.join(empties)
+        )
+    raise RuntimeError('no usable model was available for this key')
 
 
 # --------------------------------------------------------------------------- #
@@ -894,7 +999,7 @@ def render_insights(tab_key, tab_title, df, df_foster=None, context=None):
         brief += '\nAggregate statistics:\n' + '\n'.join(f'- {o}' for o in observations)
         with st.spinner('Asking the AI for insights…'):
             try:
-                narrative, model_used = _narrate(brief, key)
+                narrative, model_used, truncated = _narrate(brief, key)
             except Exception as exc:
                 st.warning(f'AI narrative unavailable ({exc}). The computed observations above still apply.')
                 return
@@ -902,6 +1007,20 @@ def render_insights(tab_key, tab_title, df, df_foster=None, context=None):
         if narrative:
             st.markdown('---')
             st.markdown(narrative)
+            if truncated:
+                st.warning(
+                    'This summary was cut off before it finished — the last point '
+                    'is incomplete. Pick a different model in the sidebar, or read '
+                    'the computed observations above, which are always complete.',
+                    icon='✂️',
+                )
             st.caption(f'Generated by `{model_used}` via Groq from the aggregate numbers above.')
         else:
-            st.warning('The model declined to summarize this section. The computed observations above still apply.')
+            # Unreachable in normal operation — _narrate raises rather than
+            # returning empty — but kept so an empty answer can never render as
+            # a silently blank panel.
+            st.warning(
+                f'`{model_used}` returned an empty summary for this section. '
+                'The computed observations above still apply; try a different '
+                'model in the sidebar.'
+            )
