@@ -19,15 +19,14 @@ import streamlit as st
 
 from viz_theme import ACCENT, SPECIES_COLORS, apply_layout
 
-# Animal Friends, 562 Camp Horne Rd, Pittsburgh, PA 15202.
-SHELTER_NAME = 'Animal Friends — 562 Camp Horne Rd, Pittsburgh PA'
+# Every distance on this tab is measured from Animal Friends,
+# 562 Camp Horne Rd, Pittsburgh, PA 15202.
 SHELTER_ZIP = '15202'
 
 # Adopters beyond this are almost always relocations or long-distance transfers.
 # They are counted in every statistic but clipped out of the distance histogram,
 # where a handful of 2,000-mile records would flatten the local detail.
 CLIP_MI = 100
-REGION_MI = 60
 
 
 def geocoding_available() -> bool:
@@ -92,12 +91,6 @@ def enrich_with_geography(df: pd.DataFrame) -> pd.DataFrame:
     return df.merge(lookup, on='Zip_Clean', how='left')
 
 
-def shelter_coords():
-    import zipcodes
-    m = zipcodes.matching(SHELTER_ZIP)[0]
-    return float(m['lat']), float(m['long'])
-
-
 # --------------------------------------------------------------------------- #
 # Section renderer                                                            #
 # --------------------------------------------------------------------------- #
@@ -121,15 +114,7 @@ def catchment_section(df: pd.DataFrame):
         st.warning('No ZIP codes in this dataset could be resolved to a county.')
         return
 
-    coverage = len(resolved) / len(geo)
     dist = resolved['Distance_mi'].dropna()
-
-    st.caption(
-        f'{len(resolved):,} of {len(geo):,} adoption records ({coverage:.0%}) carry a ZIP that '
-        f'resolves to a US county. Everything below is computed on that base. '
-        f'Distances are straight-line from ZIP centroid to {SHELTER_NAME} — regional accuracy, '
-        'not street-level.'
-    )
 
     # --- KPI row ----------------------------------------------------------- #
     c1, c2, c3, c4 = st.columns(4)
@@ -157,16 +142,10 @@ def catchment_section(df: pd.DataFrame):
     st.plotly_chart(apply_layout(fig, height=460), use_container_width=True)
 
     lead = county_counts.index[0]
-    st.caption(
-        f'{lead} accounts for {county_counts.iloc[0] / len(resolved):.0%} of geocoded adoptions. '
-        'Heavy concentration in the home county is normal and healthy for a regional shelter — '
-        'the actionable question is which *adjacent* counties are thin relative to their population.'
-    )
 
     # --- Distance distribution --------------------------------------------- #
     if not dist.empty:
         clipped = dist[dist <= CLIP_MI]
-        beyond = int((dist > CLIP_MI).sum())
         fig = px.histogram(clipped, nbins=30, title='How Far Adopters Travel',
                            color_discrete_sequence=[SPECIES_COLORS['Dog']])
         fig.add_vline(x=float(dist.median()), line_dash='dash', line_color=ACCENT,
@@ -176,12 +155,6 @@ def catchment_section(df: pd.DataFrame):
         fig.update_layout(xaxis_title=f'Distance from shelter (miles, axis capped at {CLIP_MI})',
                           yaxis_title='Adoptions', showlegend=False)
         st.plotly_chart(apply_layout(fig, height=420), use_container_width=True)
-        st.caption(
-            f'{beyond:,} of {len(dist):,} geocoded adoptions ({beyond / len(dist):.1%}) are beyond '
-            f'{CLIP_MI} miles and sit off the right of this axis — they are counted in the median '
-            'and every percentage above, just not plotted, since a handful of cross-country '
-            'relocations would otherwise compress all the local detail into one bar.'
-        )
 
     # --- Distance by species ------------------------------------------------ #
     species_dist = resolved.dropna(subset=['Distance_mi'])
@@ -203,7 +176,6 @@ def catchment_section(df: pd.DataFrame):
             within_10mi=lambda s: round((s <= 10).mean() * 100, 1),
             n='count',
         ).sort_values('n', ascending=False)
-        st.caption('Species with fewer than 30 geocoded adoptions are excluded — too few to read.')
         with st.expander('Distance by species'):
             st.dataframe(summary, use_container_width=True)
 
@@ -254,47 +226,12 @@ def catchment_section(df: pd.DataFrame):
         fig2.update_yaxes(ticksuffix='%')
         fig2.update_xaxes(dtick=1)
         right.plotly_chart(apply_layout(fig2, height=400), use_container_width=True)
-        st.caption(
-            'A widening median distance with a falling home-county share means the shelter is '
-            'drawing from farther out — good for reach, but it also means longer round trips for '
-            'meet-and-greets and returns, which is worth planning transport around.'
-        )
 
-    # --- Bubble map --------------------------------------------------------- #
+    # --- Per-ZIP reference table -------------------------------------------- #
+    # County and distance per ZIP are not derivable from any chart on this tab,
+    # so the lookup stays even though the map it used to sit under is gone.
     mapped = resolved.dropna(subset=['lat', 'lon'])
     if not mapped.empty:
-        agg = (mapped.groupby(['Zip_Clean', 'Geo_City', 'County', 'lat', 'lon'])
-               .size().reset_index(name='Adoptions'))
-        s_lat, s_lon = shelter_coords()
-        region = agg[
-            (agg['lat'].between(s_lat - 1.5, s_lat + 1.5))
-            & (agg['lon'].between(s_lon - 1.8, s_lon + 1.8))
-        ]
-        plot_df = region if len(region) >= 5 else agg
-        # px.scatter_map / MapLibre, not the deprecated *_mapbox family.
-        fig = px.scatter_map(
-            plot_df, lat='lat', lon='lon', size='Adoptions', color='Adoptions',
-            hover_name='Geo_City',
-            hover_data={'Zip_Clean': True, 'County': True, 'Adoptions': True,
-                        'lat': False, 'lon': False},
-            color_continuous_scale='Blues', size_max=34, zoom=8,
-            center={'lat': s_lat, 'lon': s_lon},
-            map_style='carto-positron',
-            title='Adopter ZIP Codes by Volume (bubble size = adoptions)',
-        )
-        fig.add_scattermap(
-            lat=[s_lat], lon=[s_lon], mode='markers+text',
-            marker=dict(size=16, color=ACCENT), text=['Shelter'],
-            textposition='top center', name='Shelter', hoverinfo='text',
-        )
-        fig.update_layout(margin=dict(l=0, r=0, t=60, b=0), height=560,
-                          showlegend=False, template='plotly_white')
-        st.plotly_chart(fig, use_container_width=True)
-        st.caption(
-            'Every ZIP with at least one adoption, sized by volume — unlike the choropleth '
-            'above, this is not restricted to a fixed list of Pittsburgh ZIPs, so genuinely '
-            'new or thin areas show up instead of being silently dropped.'
-        )
         with st.expander('Adopter ZIPs with county and distance'):
             table = (mapped.groupby(['Zip_Clean', 'Geo_City', 'County'])
                      .agg(Adoptions=('Zip_Clean', 'size'),

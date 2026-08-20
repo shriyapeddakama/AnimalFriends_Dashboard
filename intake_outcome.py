@@ -23,7 +23,6 @@ import plotly.graph_objects as go
 import streamlit as st
 
 from viz_theme import (
-    ACCENT,
     INTAKE_COLORS,
     INTAKE_ORDER,
     NON_LIVE_OUTCOMES,
@@ -178,11 +177,6 @@ def _table_expander(label, frame):
 # --------------------------------------------------------------------------- #
 def intake_outcome_section(din, dout, year_labels, start, n_years):
     st.subheader('Intake & Outcome Macro View')
-    st.caption(
-        f'Rolling 12-month periods anchored to {start.date()} — **not** calendar years. '
-        f'The export spans {n_years} such periods; partial calendar years at either end '
-        'would otherwise read as a collapse in volume.'
-    )
 
     # --- KPI row ----------------------------------------------------------- #
     cols = st.columns(4)
@@ -270,10 +264,6 @@ def intake_outcome_section(din, dout, year_labels, start, n_years):
         st.plotly_chart(
             _segment_line(live_tbl, 'Live Release Rate', '% released alive', pct=True),
             use_container_width=True)
-        st.caption(
-            'Live release excludes euthanasia, died in custody, and lost/stolen. '
-            'It is the metric most funders and Best Friends-style benchmarks ask for.'
-        )
         _table_expander('Adoption share & live release rate by year',
                         adopt_tbl.join(live_tbl, lsuffix=' — adoption %', rsuffix=' — live release %'))
 
@@ -296,10 +286,6 @@ def intake_outcome_section(din, dout, year_labels, start, n_years):
         fig.update_layout(barmode='group', title='Intake vs Outcome Volume by Year',
                           yaxis_title='Animals')
         st.plotly_chart(apply_layout(fig, height=440), use_container_width=True)
-        st.caption(
-            'A year where intake runs persistently above outcome means the in-care '
-            'population is growing — the leading indicator for kennel and foster capacity strain.'
-        )
         _table_expander('Intake vs outcome balance', balance.astype(int))
 
 
@@ -335,72 +321,25 @@ def _monthly_chart(frame, title, y_title):
 
 
 def seasonality_section(din, dout, year_labels):
-    st.subheader('Seasonality — When the Pressure Lands')
-    st.caption(
-        'Months are **period-normalized**: each calendar day is weighted by '
-        '1/(days in its month), so a half-covered month at the edge of the export '
-        'counts as half a month rather than a whole one. Values are the average '
-        'count per occurrence of that month.'
-    )
-
-    index_frames = {}
+    st.subheader('Seasonality')
 
     if din is not None:
         occ = _month_occurrences(din['Intake Date'])
-        intake_monthly = _monthly_normalized(din, 'Intake Date', occ)
         st.plotly_chart(
-            _monthly_chart(intake_monthly, 'Monthly Intake — Cat vs Dog',
+            _monthly_chart(_monthly_normalized(din, 'Intake Date', occ),
+                           'Monthly Intake — Cat vs Dog',
                            'Avg. intakes per occurrence of that month'),
             use_container_width=True)
-        index_frames['Intake'] = _monthly_normalized(din, 'Intake Date', occ, by_species=False)
-
-        if 'Intake Type' in din.columns:
-            surr = din[din['Intake Type'] == 'Owner Surrender']
-            if not surr.empty:
-                index_frames['Owner surrender'] = _monthly_normalized(
-                    surr, 'Intake Date', occ, by_species=False)
 
     if dout is not None and 'Outcome Type' in dout.columns:
         occ_o = _month_occurrences(dout['Outcome Date'])
         adopt = dout[dout['Outcome Type'] == 'Adoption']
         if not adopt.empty:
-            adopt_monthly = _monthly_normalized(adopt, 'Outcome Date', occ_o)
             st.plotly_chart(
-                _monthly_chart(adopt_monthly, 'Monthly Adoptions — Cat vs Dog',
+                _monthly_chart(_monthly_normalized(adopt, 'Outcome Date', occ_o),
+                               'Monthly Adoptions — Cat vs Dog',
                                'Avg. adoptions per occurrence of that month'),
                 use_container_width=True)
-            index_frames['Adoption'] = _monthly_normalized(adopt, 'Outcome Date', occ_o,
-                                                           by_species=False)
-
-    # --- Seasonal index ---------------------------------------------------- #
-    # Each series rescaled so its own annual average = 100. This is the chart
-    # that answers "does supply peak before or after demand?" — the raw counts
-    # can't, because intake and adoption run at different absolute volumes and a
-    # dual axis would be a lie.
-    if index_frames:
-        idx = pd.DataFrame({
-            name: (s / s.mean() * 100).round(1) for name, s in index_frames.items()
-        })
-        idx.index = pd.Index([MONTH_ABBR[m - 1] for m in idx.index], name='Month')
-        tidy = idx.reset_index().melt(id_vars='Month', var_name='Series', value_name='Index')
-        series_colors = {'Intake': SPECIES_COLORS['Dog'], 'Adoption': '#1baf7a',
-                         'Owner surrender': SPECIES_COLORS['Cat']}
-        fig = px.line(tidy, x='Month', y='Index', color='Series', markers=True,
-                      title='Seasonal Index — Intake vs Adoption vs Surrender (100 = own annual average)',
-                      color_discrete_map=series_colors,
-                      category_orders={'Month': MONTH_ABBR})
-        fig.add_hline(y=100, line_dash='dash', line_color='#b7b5ae',
-                      annotation_text='annual average', annotation_position='top left')
-        fig.update_traces(line_width=2, marker_size=9)
-        fig.update_layout(yaxis_title='Index (100 = annual average)', xaxis_title='',
-                          hovermode='x unified')
-        st.plotly_chart(apply_layout(fig, height=450), use_container_width=True)
-        st.caption(
-            'Indexing each series to its own average puts three different-sized flows on '
-            'one honest axis. A month where the intake line runs above 100 while adoption '
-            'runs below is a month where the shelter fills up faster than it empties.'
-        )
-        _table_expander('Seasonal index values', idx)
 
     # --- Month x Year heatmap ---------------------------------------------- #
     for label, df, date_col in (('Intake', din, 'Intake Date'), ('Outcome', dout, 'Outcome Date')):
@@ -434,11 +373,6 @@ def surrender_section(din, year_labels):
         st.info('No owner-surrender records found in the intake file.')
         return
 
-    st.caption(
-        'Population = `Intake Type == "Owner Surrender"`. `Intake Sub-type` is used only to '
-        'break down *why* within that population — never to reclassify or exclude a record '
-        'from the surrender count.'
-    )
 
     # --- KPI row ----------------------------------------------------------- #
     share = len(surr) / len(din) * 100
@@ -463,11 +397,6 @@ def surrender_section(din, year_labels):
     right.plotly_chart(_segment_line(share_tbl, 'Owner Surrenders — Share of Intake',
                                      '% of that year\'s intake', pct=True),
                        use_container_width=True)
-    st.caption(
-        'Headcount and share are shown as two charts on their own axes rather than one '
-        'dual-axis chart — a rising headcount with a flat share means the shelter got '
-        'busier overall, not that surrenders got worse.'
-    )
     _table_expander('Surrender headcount and share by year',
                     count_tbl.astype(int).join(share_tbl, lsuffix=' (n)', rsuffix=' (%)'))
 
@@ -513,10 +442,6 @@ def surrender_section(din, year_labels):
         fig.for_each_annotation(lambda a: a.update(text=a.text.split('=')[-1]))
         fig.update_xaxes(matches=None)
         st.plotly_chart(apply_layout(fig, height=120 + 34 * top_n), use_container_width=True)
-        st.caption(
-            'Percentages are of that species\' surrender total, so cat and dog reasons are '
-            'comparable even though the volumes differ.'
-        )
         _table_expander('Surrender reasons', reasons.drop(columns='Label'))
 
         # --- Has the reason mix shifted? ----------------------------------- #
@@ -536,11 +461,6 @@ def surrender_section(din, year_labels):
                           hovermode='x unified')
         fig.update_yaxes(ticksuffix='%')
         st.plotly_chart(apply_layout(fig, height=450), use_container_width=True)
-        st.caption(
-            'A reason that climbs year over year is a programme gap the shelter can act on — '
-            'housing-driven surrenders point at landlord/pet-deposit assistance, behaviour at '
-            'free training clinics, cost at a pet food bank or low-cost vet clinic.'
-        )
         _table_expander('Reason mix by year (%)', share_ct.round(1))
 
 
@@ -555,11 +475,6 @@ def flow_section(dout, year_labels):
         st.warning('The outcome file needs both "Intake Type" and "Outcome Type" columns for this view.')
         return
 
-    st.caption(
-        'Each outcome record still carries the channel the animal arrived through, so the '
-        'two can be crossed. This is where a change in the headline adoption rate gets '
-        'traced back to a specific channel rather than guessed at.'
-    )
 
     c1, c2 = st.columns(2)
     species_opts = ['All'] + [s for s in SPECIES_GROUPS if s in dout['Species_Group'].unique()]
@@ -641,10 +556,6 @@ def flow_section(dout, year_labels):
                       yaxis_title='')
     fig.update_xaxes(ticksuffix='%', range=[0, 100])
     st.plotly_chart(apply_layout(fig, height=110 + 52 * len(order_in)), use_container_width=True)
-    st.caption(
-        'Read across a row: a channel where the adoption band is thin and the '
-        'return-to-owner band is wide is not a failing channel — it is doing a different job.'
-    )
     _table_expander('Outcome mix by channel (%)', share.round(1))
 
     # --- Channel contribution to the adoption rate ------------------------- #
@@ -668,12 +579,6 @@ def flow_section(dout, year_labels):
                            f'What Drives the Adoption Rate — Contribution by Intake Channel ({species})',
                            'Percentage points of the adoption rate', pct=False),
             use_container_width=True)
-        st.caption(
-            'Bar heights sum to that year\'s overall adoption rate. A drop in the total '
-            'is attributable to whichever band shrank — that is the channel to investigate, '
-            'and often the drop is a *shift* (e.g. more strays reclaimed by their owners) '
-            'rather than a failure to place animals.'
-        )
         _table_expander('Adoption-rate contribution by channel (percentage points)',
                         contrib_df.round(2))
 
@@ -703,13 +608,6 @@ def flow_section(dout, year_labels):
 def foster_proxy_section(dout, year_labels):
     st.markdown('---')
     st.subheader('Foster Pipeline (from outcome records)')
-    st.warning(
-        'Directional proxy, not a census. The source system has no dedicated foster '
-        'outcome type, so this counts only the outcome sub-types that prove an animal '
-        f'passed through foster care — {", ".join(FOSTER_SUBTYPES)}. Animals fostered '
-        'and then returned to the shelter for a different final outcome are invisible here.',
-        icon='⚠️',
-    )
 
     if 'Outcome Sub-type' not in dout.columns:
         st.info('The outcome file has no "Outcome Sub-type" column.')
@@ -742,12 +640,6 @@ def foster_proxy_section(dout, year_labels):
         _stacked_share(subtype_by_year, FOSTER_SUBTYPES, subtype_colors,
                        'Foster Sub-type Volume by Year', 'Records', pct=False),
         use_container_width=True)
-    st.caption(
-        '"Foster to Adopt" and "Foster Fail" both end with a foster household keeping the '
-        'animal, but they are not the same label renamed: if "Foster Fail" volume held '
-        'steady as "Foster to Adopt" appeared, the two are concurrent tracks. Confirm the '
-        'operational definitions with shelter staff before presenting either as settled.'
-    )
     _table_expander('Foster sub-type counts by year', subtype_by_year.astype(int))
 
     left, right = st.columns(2)
@@ -765,4 +657,3 @@ def foster_proxy_section(dout, year_labels):
                        marker_line_color='white', marker_line_width=2)
     fig2.update_layout(xaxis_title='', yaxis_title='Records', showlegend=False)
     right.plotly_chart(apply_layout(fig2, height=420), use_container_width=True)
-    st.caption(f'Sample is small (n={len(foster):,}) — read the species split as directional.')
